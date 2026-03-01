@@ -1,0 +1,78 @@
+DEVICE_ID: 1111BEBB0057
+Body:
+  base_link: base_link
+  frame: sensor
+  extrinsic:
+    translation:
+      x: 0
+      y: 0
+      z: 0
+    quaternion:
+      x: 0
+      y: 0
+      z: 0
+      w: 1
+Sensor:
+  Lidar:
+    base_link: sensor
+    frame: lidar
+    extrinsic:
+      translation:
+        x: 0
+        y: 0
+        z: 0
+      quaternion:
+        x: 0
+        y: 0
+        z: 0
+        w: 1
+  Camera:
+    base_link: sensor
+    frame: camera
+    extrinsic:
+      translation:
+        x: 0.0043
+        y: 0
+        z: -0.0269
+      quaternion:
+        x: -0.501437
+        y: 0.497252
+        z: -0.500006
+        w: 0.501295
+    intrinsic:
+      model: Pinhole
+      int_matrix:
+        - 792.593268
+        - 0
+        - 924.9422070000001
+        - 0
+        - 795.628889
+        - 548.348735
+        - 0
+        - 0
+        - 1
+      dist_coeff:
+        - 1.176625
+        - 0.497958
+        - -0.000217
+        - 7.8e-05
+        - 0.025926
+        - 1.520189
+        - 0.833914
+        - 0.125083
+      image_size:
+        - 1920
+        - 1080
+  IMU:
+    base_link: sensor
+    frame: imu
+    extrinsic:
+      translation:
+        x: -0.0106
+        y: -0.009900000000000001
+        z: 0.0155
+      quaternion:
+        x: -0.001464
+        y: -0.004253
+        z: 0.00225
+        w: 0.999987

@@ -1,0 +1,9 @@
+# GetGraph.srv
+# GNGグラフ全体を取得
+
+# Request
+bool traversable_only  # trueならtraversableノードのみ
+---
+# Response
+GNGGraph graph
+bool success
