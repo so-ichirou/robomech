@@ -205,6 +205,7 @@ def read_all_markers(bag_path, topic):
     Returns: list of (timestamp_ns, edge_pairs)
     """
     results = []
+    skip_count = 0
     with open_bag(bag_path) as reader:
         connections = [c for c in reader.connections if c.topic == topic]
         if not connections:
@@ -212,13 +213,19 @@ def read_all_markers(bag_path, topic):
             return results
 
         for conn, timestamp, rawdata in reader.messages(connections=connections):
-            msg = deserialize_cdr(rawdata, conn.msgtype)
+            try:
+                msg = deserialize_cdr(rawdata, conn.msgtype)
+            except (AssertionError, Exception):
+                skip_count += 1
+                continue
             # DELETEALL (action=3) はスキップ
             if hasattr(msg, 'action') and msg.action == 3:
                 continue
             edges = marker_to_line_pairs(msg)
             results.append((timestamp, edges))
 
+    if skip_count > 0:
+        print(f"  Warning: skipped {skip_count} messages due to deserialization errors")
     return results
 
 

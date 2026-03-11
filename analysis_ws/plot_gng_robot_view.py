@@ -5,6 +5,7 @@ GNGネットワークをロボット視点（body座標系）から投影した�
 
 ロボットの前方を上として、body座標系でのGNGノード配置を描画。
 gng_node_body トピックを使用（存在しない場合はodomで逆変換）。
+Layer1 (Attention) ノード・エッジもオーバーレイ。
 """
 
 import argparse
@@ -56,8 +57,40 @@ def classify_nodes_by_rgb(rgb):
     return is_traversable, is_untraversable, is_attention
 
 
-def plot_robot_view(ax, xyz_body, rgb, edges_body=None, title='',
-                    crop_range=5.0):
+def classify_layer1_nodes_by_rgb(rgb):
+    """Layer1ノードのRGB分類"""
+    is_trav = (rgb[:, 0] == 0) & (rgb[:, 1] == 255) & (rgb[:, 2] == 255)
+    is_untrav = (rgb[:, 0] == 255) & (rgb[:, 1] == 0) & (rgb[:, 2] == 255)
+    return is_trav, is_untrav
+
+
+def transform_edges_to_body(raw_edges, position, orientation_xyzw):
+    """odom座標系のエッジをbody座標系に変換"""
+    if not raw_edges:
+        return []
+    edges_body = []
+    for (x1, y1, z1), (x2, y2, z2) in raw_edges:
+        p1 = odom_to_body_transform(
+            np.array([[x1, y1, z1]]), position, orientation_xyzw)[0]
+        p2 = odom_to_body_transform(
+            np.array([[x2, y2, z2]]), position, orientation_xyzw)[0]
+        edges_body.append(
+            ((p1[0], p1[1], p1[2]), (p2[0], p2[1], p2[2])))
+    return edges_body
+
+
+def find_nearest_timestamp_data(data_list, target_ts):
+    """タイムスタンプが最も近いデータを返す"""
+    if not data_list:
+        return None
+    timestamps = np.array([d[0] for d in data_list])
+    idx = np.argmin(np.abs(timestamps - target_ts))
+    return data_list[idx]
+
+
+def plot_robot_view(ax, xyz_body, rgb, edges_body=None,
+                    attn_xyz_body=None, attn_rgb=None, attn_edges_body=None,
+                    title='', crop_range=5.0):
     """ロボット視点のGNG投影図を描画
 
     body座標系: x=前方, y=左方
@@ -94,8 +127,28 @@ def plot_robot_view(ax, xyz_body, rgb, edges_body=None, title='',
                   c='#FF8C00', s=14, alpha=0.9, edgecolors='black',
                   linewidths=0.3, zorder=4)
 
+    # Layer1 (Attention) エッジの描画
+    if attn_edges_body:
+        for (x1, y1, _), (x2, y2, _) in attn_edges_body:
+            ax.plot([-y1, -y2], [x1, x2],
+                    color='#FF8C00', linewidth=0.5, alpha=0.6)
+
+    # Layer1 (Attention) ノードの描画
+    if attn_xyz_body is not None and len(attn_xyz_body) > 0:
+        attn_plot_x = -attn_xyz_body[:, 1]
+        attn_plot_y = attn_xyz_body[:, 0]
+        is_l1_trav, is_l1_untrav = classify_layer1_nodes_by_rgb(attn_rgb)
+
+        if np.any(is_l1_trav):
+            ax.scatter(attn_plot_x[is_l1_trav], attn_plot_y[is_l1_trav],
+                      c='#00CCCC', s=10, alpha=0.8, edgecolors='none', zorder=5)
+        if np.any(is_l1_untrav):
+            ax.scatter(attn_plot_x[is_l1_untrav], attn_plot_y[is_l1_untrav],
+                      c='#CC00CC', s=12, alpha=0.9, edgecolors='black',
+                      linewidths=0.3, zorder=6)
+
     # ロボット位置（原点）
-    ax.plot(0, 0, 'b^', markersize=12, zorder=5, label='Robot')
+    ax.plot(0, 0, 'b^', markersize=12, zorder=7, label='Robot')
 
     # ロボットの向き（前方方向）
     ax.annotate('', xy=(0, crop_range * 0.3), xytext=(0, 0),
@@ -125,7 +178,13 @@ def main():
     parser.add_argument('--gng-topic', default='gng_node', help='GNGノードトピック (odom frame)')
     parser.add_argument('--gng-body-topic', default='gng_node_body',
                         help='GNGノードトピック (body frame)')
-    parser.add_argument('--edge-topic', default='gng_edge', help='GNGエッジトピック')
+    parser.add_argument('--edge-topic', default='gng_edge', help='GNGエッジトピック (odom frame)')
+    parser.add_argument('--edge-body-topic', default='gng_edge_body',
+                        help='GNGエッジトピック (body frame)')
+    parser.add_argument('--attn-node-topic', default='attention_node',
+                        help='Attention (Layer1) ノードトピック (odom frame)')
+    parser.add_argument('--attn-edge-topic', default='attention_edge',
+                        help='Attention (Layer1) エッジトピック (odom frame)')
     parser.add_argument('--odom-topic', default='/Odometry', help='オドメトリトピック')
     parser.add_argument('--output-dir', default='./output', help='出力ディレクトリ')
     parser.add_argument('--n-snapshots', type=int, default=6, help='スナップショット数')
@@ -156,7 +215,23 @@ def main():
     odom_ts, odom_pos, odom_ori = read_odometry(args.bag_path, args.odom_topic)
 
     # エッジ読み取り
-    edge_data = read_all_markers(args.bag_path, args.edge_topic)
+    if use_body_direct:
+        print(f"Reading body frame edges from '{args.edge_body_topic}'...")
+        edge_body_data = read_all_markers(args.bag_path, args.edge_body_topic)
+        print(f"  {len(edge_body_data)} frames")
+        edge_data = None  # odom frame不要
+    else:
+        edge_body_data = None
+        edge_data = read_all_markers(args.bag_path, args.edge_topic)
+
+    # Attention node/edge読み取り (odom frame)
+    print("Reading Attention (Layer1) nodes...")
+    attn_node_data = read_all_pointclouds_xyzrgb(args.bag_path, args.attn_node_topic)
+    print(f"  {len(attn_node_data)} frames")
+
+    print("Reading Attention (Layer1) edges...")
+    attn_edge_data = read_all_markers(args.bag_path, args.attn_edge_topic)
+    print(f"  {len(attn_edge_data)} frames")
 
     # attention phases
     attention_phases = read_attention_target(args.bag_path)
@@ -217,10 +292,14 @@ def main():
 
         ts, xyz, rgb = gng_data[idx]
 
+        # --- GNG node/edge (body frame) ---
         if use_body_direct:
             xyz_body = xyz
+            # body frameエッジを取得
             edges_body = None
-            # bodyフレームのエッジは別途変換が必要だが、省略
+            if edge_body_data:
+                entry = find_nearest_timestamp_data(edge_body_data, ts)
+                edges_body = entry[1] if entry else []
         else:
             # odom座標系からbody座標系への変換
             if len(odom_ts) > 0:
@@ -232,22 +311,38 @@ def main():
                 # エッジも変換
                 edges_body = None
                 if edge_data:
-                    edge_ts = np.array([d[0] for d in edge_data])
-                    edge_idx = np.argmin(np.abs(edge_ts - ts))
-                    raw_edges = edge_data[edge_idx][1]
-                    edges_body = []
-                    for (x1, y1, z1), (x2, y2, z2) in raw_edges:
-                        p1 = odom_to_body_transform(
-                            np.array([[x1, y1, z1]]), pos, ori)[0]
-                        p2 = odom_to_body_transform(
-                            np.array([[x2, y2, z2]]), pos, ori)[0]
-                        edges_body.append(
-                            ((p1[0], p1[1], p1[2]), (p2[0], p2[1], p2[2])))
+                    edge_entry = find_nearest_timestamp_data(edge_data, ts)
+                    raw_edges = edge_entry[1] if edge_entry else []
+                    edges_body = transform_edges_to_body(raw_edges, pos, ori)
             else:
                 xyz_body = xyz
                 edges_body = None
 
+        # --- Attention node/edge (odom frame → body変換) ---
+        attn_xyz_body = None
+        attn_rgb_snap = None
+        attn_edges_body = None
+
+        if len(odom_ts) > 0:
+            odom_idx = np.argmin(np.abs(odom_ts - ts))
+            pos = odom_pos[odom_idx]
+            ori = odom_ori[odom_idx]
+
+            # Attention nodes
+            attn_entry = find_nearest_timestamp_data(attn_node_data, ts)
+            if attn_entry and len(attn_entry[1]) > 0:
+                attn_xyz_body = odom_to_body_transform(attn_entry[1], pos, ori)
+                attn_rgb_snap = attn_entry[2]
+
+            # Attention edges
+            attn_edge_entry = find_nearest_timestamp_data(attn_edge_data, ts)
+            if attn_edge_entry:
+                raw_attn_edges = attn_edge_entry[1]
+                attn_edges_body = transform_edges_to_body(raw_attn_edges, pos, ori)
+
         plot_robot_view(ax, xyz_body, rgb, edges_body=edges_body,
+                       attn_xyz_body=attn_xyz_body, attn_rgb=attn_rgb_snap,
+                       attn_edges_body=attn_edges_body,
                        title=label, crop_range=args.crop_range)
 
     # 未使用のサブプロットを非表示
@@ -260,11 +355,13 @@ def main():
         mpatches.Patch(color='#00CC00', label='Traversable'),
         mpatches.Patch(color='#FF0000', label='Untraversable'),
         mpatches.Patch(color='#FF8C00', label='Attention'),
+        mpatches.Patch(color='#00CCCC', label='L1 Traversable'),
+        mpatches.Patch(color='#CC00CC', label='L1 Untraversable'),
         plt.Line2D([0], [0], marker='^', color='blue', linestyle='None',
                    markersize=10, label='Robot'),
     ]
     fig.legend(handles=legend_elements, loc='lower center',
-              ncol=4, fontsize=10, frameon=True,
+              ncol=6, fontsize=9, frameon=True,
               bbox_to_anchor=(0.5, -0.02))
 
     fig.suptitle('GNG Network - Robot View', fontsize=14, fontweight='bold', y=1.01)

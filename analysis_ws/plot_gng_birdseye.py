@@ -6,7 +6,8 @@ GNGネットワークの鳥瞰図を複数スナップショットで生成
 出力:
   - attention前、attention中、attention後を含む複数スナップショットの並列図
   - 各スナップショットにはGNGノード（色分け: traversable/untraversable/attention）＋エッジ
-  - オプションで背景にgrid_mapを重ねる (方式C)
+  - Layer1 (Attention) ノード・エッジのオーバーレイ
+  - オプションで背景に白黒占有grid_mapを重ねる
 """
 
 import argparse
@@ -37,6 +38,18 @@ def classify_nodes_by_rgb(rgb):
     is_traversable = (rgb[:, 0] == 0) & (rgb[:, 1] == 255) & (rgb[:, 2] == 0)
     is_untraversable = (rgb[:, 0] == 255) & (rgb[:, 1] == 0) & (rgb[:, 2] == 0)
     return is_traversable, is_untraversable, is_attention
+
+
+def classify_layer1_nodes_by_rgb(rgb):
+    """Layer1ノードのRGB分類
+
+    gng_node.cpp publishLayer1Nodes の色分け:
+      - シアン (0,255,255): Layer1 traversable
+      - マゼンタ (255,0,255): Layer1 untraversable
+    """
+    is_trav = (rgb[:, 0] == 0) & (rgb[:, 1] == 255) & (rgb[:, 2] == 255)
+    is_untrav = (rgb[:, 0] == 255) & (rgb[:, 1] == 0) & (rgb[:, 2] == 255)
+    return is_trav, is_untrav
 
 
 def select_snapshot_indices(gng_data, attention_phases, n_extra=3):
@@ -100,14 +113,16 @@ def select_snapshot_indices(gng_data, attention_phases, n_extra=3):
 
 
 def plot_gng_snapshot(ax, xyz, rgb, edges=None, robot_pos=None,
-                      bg_height_map=None, bg_extent=None,
+                      bg_occupancy=None, bg_extent=None,
+                      attn_xyz=None, attn_rgb=None, attn_edges=None,
                       xlim=None, ylim=None, title=''):
     """単一スナップショットのGNG鳥瞰図を描画"""
 
-    # 背景のgrid_map
-    if bg_height_map is not None and bg_extent is not None:
-        ax.imshow(bg_height_map, origin='lower', extent=bg_extent,
-                  cmap='gray', alpha=0.3, aspect='equal', interpolation='nearest')
+    # 背景の白黒占有grid_map
+    if bg_occupancy is not None and bg_extent is not None:
+        ax.imshow(bg_occupancy, origin='lower', extent=bg_extent,
+                  cmap='gray', vmin=0, vmax=1, alpha=0.5,
+                  aspect='equal', interpolation='nearest')
 
     # エッジの描画
     if edges:
@@ -134,9 +149,29 @@ def plot_gng_snapshot(ax, xyz, rgb, edges=None, robot_pos=None,
                       c='#FF8C00', s=12, alpha=0.9, edgecolors='black',
                       linewidths=0.3, zorder=4)
 
+    # Layer1 (Attention) エッジの描画
+    if attn_edges:
+        for (x1, y1, _), (x2, y2, _) in attn_edges:
+            ax.plot([x1, x2], [y1, y2], color='#FF8C00', linewidth=0.5, alpha=0.6)
+
+    # Layer1 (Attention) ノードの描画
+    if attn_xyz is not None and len(attn_xyz) > 0:
+        is_l1_trav, is_l1_untrav = classify_layer1_nodes_by_rgb(attn_rgb)
+
+        # Layer1 Traversable（シアン）
+        if np.any(is_l1_trav):
+            ax.scatter(attn_xyz[is_l1_trav, 0], attn_xyz[is_l1_trav, 1],
+                      c='#00CCCC', s=10, alpha=0.8, edgecolors='none', zorder=5)
+
+        # Layer1 Untraversable（マゼンタ）
+        if np.any(is_l1_untrav):
+            ax.scatter(attn_xyz[is_l1_untrav, 0], attn_xyz[is_l1_untrav, 1],
+                      c='#CC00CC', s=12, alpha=0.9, edgecolors='black',
+                      linewidths=0.3, zorder=6)
+
     # ロボット位置
     if robot_pos is not None:
-        ax.plot(robot_pos[0], robot_pos[1], 'b*', markersize=10, zorder=5)
+        ax.plot(robot_pos[0], robot_pos[1], 'b*', markersize=10, zorder=7)
 
     if xlim:
         ax.set_xlim(xlim)
@@ -163,12 +198,16 @@ def main():
     parser.add_argument('bag_path', help='rosbagディレクトリまたは.db3ファイルへのパス')
     parser.add_argument('--gng-topic', default='gng_node', help='GNGノードトピック')
     parser.add_argument('--edge-topic', default='gng_edge', help='GNGエッジトピック')
+    parser.add_argument('--attn-node-topic', default='attention_node',
+                        help='Attention (Layer1) ノードトピック')
+    parser.add_argument('--attn-edge-topic', default='attention_edge',
+                        help='Attention (Layer1) エッジトピック')
     parser.add_argument('--odom-topic', default='/Odometry', help='オドメトリトピック')
     parser.add_argument('--cloud-topic', default='/cloud_registered', help='点群トピック')
     parser.add_argument('--output-dir', default='./output', help='出力ディレクトリ')
-    parser.add_argument('--with-gridmap', action='store_true', help='grid_mapを背景表示')
+    parser.add_argument('--with-gridmap', action='store_true', help='白黒占有grid_mapを背景表示')
     parser.add_argument('--n-extra', type=int, default=3, help='追加スナップショット数')
-    parser.add_argument('--resolution', type=float, default=0.05, help='grid_map解像度 [m]')
+    parser.add_argument('--resolution', type=float, default=0.10, help='grid_map解像度 [m]')
     parser.add_argument('--fixed-view', action='store_true',
                         help='全スナップショットで同じ表示範囲を使用')
     args = parser.parse_args()
@@ -184,6 +223,14 @@ def main():
     print("Reading GNG edges...")
     edge_data = read_all_markers(args.bag_path, args.edge_topic)
     print(f"  {len(edge_data)} frames")
+
+    print("Reading Attention (Layer1) nodes...")
+    attn_node_data = read_all_pointclouds_xyzrgb(args.bag_path, args.attn_node_topic)
+    print(f"  {len(attn_node_data)} frames")
+
+    print("Reading Attention (Layer1) edges...")
+    attn_edge_data = read_all_markers(args.bag_path, args.attn_edge_topic)
+    print(f"  {len(attn_edge_data)} frames")
 
     print("Reading odometry...")
     odom_ts, odom_pos, _ = read_odometry(args.bag_path, args.odom_topic)
@@ -213,14 +260,16 @@ def main():
         n_nodes = gng_data[idx][1].shape[0]
         print(f"  [{idx:4d}] t={t_sec:7.1f}s  nodes={n_nodes:4d}  {label}")
 
-    # 背景grid_map（オプション）
-    bg_height_map = None
+    # 背景占有grid_map（オプション）
+    bg_occupancy = None
     bg_extent = None
     if args.with_gridmap:
-        print("\nBuilding background grid map...")
+        print("\nBuilding background occupancy grid map...")
         all_points = accumulate_pointclouds(args.bag_path, args.cloud_topic)
         height_map, count_map, bg_extent = create_gridmap(all_points, args.resolution)
-        bg_height_map = denoise_gridmap(height_map, count_map)
+        denoised = denoise_gridmap(height_map, count_map)
+        # 白黒占有グリッド: 点あり=0(黒), 点なし=1(白)
+        bg_occupancy = np.where(~np.isnan(denoised), 0.0, 1.0)
 
     # 表示範囲の決定
     xlim = ylim = None
@@ -250,6 +299,18 @@ def main():
         edge_entry = find_nearest_timestamp_data(edge_data, ts)
         edges = edge_entry[1] if edge_entry else []
 
+        # 対応するattention node/edgeを取得
+        attn_node_entry = find_nearest_timestamp_data(attn_node_data, ts)
+        attn_xyz = attn_node_entry[1] if attn_node_entry else None
+        attn_rgb = attn_node_entry[2] if attn_node_entry else None
+        # 空のPointCloud2をスキップ
+        if attn_xyz is not None and len(attn_xyz) == 0:
+            attn_xyz = None
+            attn_rgb = None
+
+        attn_edge_entry = find_nearest_timestamp_data(attn_edge_data, ts)
+        attn_edges = attn_edge_entry[1] if attn_edge_entry else []
+
         # ロボット位置を取得
         robot_pos = None
         if len(odom_ts) > 0:
@@ -258,7 +319,8 @@ def main():
 
         plot_gng_snapshot(
             ax, xyz, rgb, edges=edges, robot_pos=robot_pos,
-            bg_height_map=bg_height_map, bg_extent=bg_extent,
+            bg_occupancy=bg_occupancy, bg_extent=bg_extent,
+            attn_xyz=attn_xyz, attn_rgb=attn_rgb, attn_edges=attn_edges,
             xlim=xlim, ylim=ylim, title=label
         )
 
@@ -275,11 +337,13 @@ def main():
         mpatches.Patch(color='#00CC00', label='Traversable'),
         mpatches.Patch(color='#FF0000', label='Untraversable'),
         mpatches.Patch(color='#FF8C00', label='Attention'),
+        mpatches.Patch(color='#00CCCC', label='L1 Traversable'),
+        mpatches.Patch(color='#CC00CC', label='L1 Untraversable'),
         plt.Line2D([0], [0], marker='*', color='blue', linestyle='None',
                    markersize=10, label='Robot'),
     ]
     fig.legend(handles=legend_elements, loc='lower center',
-              ncol=4, fontsize=10, frameon=True,
+              ncol=6, fontsize=9, frameon=True,
               bbox_to_anchor=(0.5, -0.02))
 
     fig.suptitle('GNG Network Bird\'s Eye View', fontsize=14, fontweight='bold', y=1.01)
@@ -291,25 +355,34 @@ def main():
     print(f"\nSaved: {output_path}")
     plt.close()
 
-    # --- 方式C: grid_map背景＋最終GNG前景 ---
-    if args.with_gridmap and bg_height_map is not None:
+    # --- 方式C: 白黒grid_map背景＋最終GNG前景 ---
+    if args.with_gridmap and bg_occupancy is not None:
         print("\nGenerating grid_map + GNG overlay (last frame)...")
         fig_c, ax_c = plt.subplots(figsize=(10, 8))
 
-        # 背景grid_map
-        valid = bg_height_map[~np.isnan(bg_height_map)]
-        vmin = np.percentile(valid, 2) if len(valid) > 0 else None
-        vmax = np.percentile(valid, 98) if len(valid) > 0 else None
-        ax_c.imshow(bg_height_map, origin='lower', extent=bg_extent,
-                    cmap='gray', alpha=0.5, aspect='equal',
-                    vmin=vmin, vmax=vmax, interpolation='nearest')
+        # 白黒占有grid_map背景
+        ax_c.imshow(bg_occupancy, origin='lower', extent=bg_extent,
+                    cmap='gray', vmin=0, vmax=1, alpha=0.5,
+                    aspect='equal', interpolation='nearest')
 
         # 最終フレームのGNG
         last_ts, last_xyz, last_rgb = gng_data[-1]
         last_edge_entry = find_nearest_timestamp_data(edge_data, last_ts)
         last_edges = last_edge_entry[1] if last_edge_entry else []
 
+        # 最終フレームのattention
+        last_attn_node = find_nearest_timestamp_data(attn_node_data, last_ts)
+        last_attn_xyz = last_attn_node[1] if last_attn_node else None
+        last_attn_rgb = last_attn_node[2] if last_attn_node else None
+        if last_attn_xyz is not None and len(last_attn_xyz) == 0:
+            last_attn_xyz = None
+            last_attn_rgb = None
+        last_attn_edge_entry = find_nearest_timestamp_data(attn_edge_data, last_ts)
+        last_attn_edges = last_attn_edge_entry[1] if last_attn_edge_entry else []
+
         plot_gng_snapshot(ax_c, last_xyz, last_rgb, edges=last_edges,
+                          attn_xyz=last_attn_xyz, attn_rgb=last_attn_rgb,
+                          attn_edges=last_attn_edges,
                           title='Grid Map + GNG Network (Last Frame)')
 
         # 走行経路オーバーレイ
