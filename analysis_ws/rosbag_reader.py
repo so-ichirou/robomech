@@ -233,36 +233,17 @@ def _parse_marker_points_from_cdr(rawdata):
 def read_all_markers(bag_path, topic):
     """指定トピックの全Markerメッセージを読み取る
 
-    rosbags の deserialize_cdr にバグがある場合、
-    手動CDRパーサーにフォールバックする。
+    rosbags の deserialize_cdr にバグがあるため (Issue #14)、
+    手動CDRパーサーを優先使用する。
 
     Returns: list of (timestamp_ns, edge_pairs)
     """
-    results = []
-    skip_count = 0
-    with open_bag(bag_path) as reader:
-        connections = [c for c in reader.connections if c.topic == topic]
-        if not connections:
-            print(f"Warning: topic '{topic}' not found in bag")
-            return results
-
-        for conn, timestamp, rawdata in reader.messages(connections=connections):
-            try:
-                msg = deserialize_cdr(rawdata, conn.msgtype)
-                if hasattr(msg, 'action') and msg.action == 3:
-                    continue
-                edges = marker_to_line_pairs(msg)
-                results.append((timestamp, edges))
-            except Exception:
-                skip_count += 1
-                continue
-
-    if skip_count > 0:
-        print(f"  Warning: deserialize_cdr failed for {skip_count}/{skip_count + len(results)} messages")
-        if not results:
-            print(f"  Falling back to manual CDR parser...")
-            results = _read_markers_manual(bag_path, topic)
-
+    # トピック名の / 有無を両方試す
+    results = _read_markers_manual(bag_path, topic)
+    if not results and not topic.startswith('/'):
+        results = _read_markers_manual(bag_path, '/' + topic)
+    if not results and topic.startswith('/'):
+        results = _read_markers_manual(bag_path, topic[1:])
     return results
 
 
@@ -270,6 +251,7 @@ def _read_markers_manual(bag_path, topic):
     """手動CDRパーサーでMarkerメッセージを読み取る (rosbags bug回避)"""
     results = []
     skip_count = 0
+    total_edges = 0
 
     with open_bag(bag_path) as reader:
         connections = [c for c in reader.connections if c.topic == topic]
@@ -282,13 +264,17 @@ def _read_markers_manual(bag_path, topic):
                 if action == 3:
                     continue
                 results.append((timestamp, edges))
-            except Exception:
+                total_edges += len(edges)
+            except Exception as e:
                 skip_count += 1
+                if skip_count <= 3:
+                    print(f"  Warning: manual parser error on msg: {e}")
                 continue
 
     if skip_count > 0:
         print(f"  Warning: manual parser skipped {skip_count} messages")
-    print(f"  Manual parser: {len(results)} frames read successfully")
+    if results:
+        print(f"  Manual parser: {len(results)} frames, {total_edges} total edges")
     return results
 
 

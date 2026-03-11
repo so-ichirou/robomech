@@ -201,8 +201,41 @@ def main():
     print(f"  {len(attn_edge_data)} frames")
 
     print("Reading odometry...")
-    odom_ts, odom_pos, _ = read_odometry(args.bag_path, args.odom_topic)
-    path_xy = odom_pos[:, :2] if len(odom_pos) > 0 else None
+    odom_ts, odom_pos, odom_ori = read_odometry(args.bag_path, args.odom_topic)
+    # オドメトリを原点(0,0)開始に正規化
+    if len(odom_pos) > 0:
+        odom_origin = odom_pos[0].copy()
+        odom_pos = odom_pos - odom_origin
+        path_xy = odom_pos[:, :2]
+    else:
+        odom_origin = np.zeros(3)
+        path_xy = None
+
+    # 全データをオドメトリ原点基準にオフセット（odomフレームデータ共通）
+    if np.any(odom_origin != 0):
+        print(f"Applying origin offset: ({odom_origin[0]:.2f}, {odom_origin[1]:.2f}, {odom_origin[2]:.2f})")
+        # GNGノード
+        for i in range(len(gng_data)):
+            ts, xyz, rgb = gng_data[i]
+            gng_data[i] = (ts, xyz - odom_origin[:3], rgb)
+        # GNGエッジ
+        for i in range(len(edge_data)):
+            ts, edges = edge_data[i]
+            shifted = [((e[0][0]-odom_origin[0], e[0][1]-odom_origin[1], e[0][2]-odom_origin[2]),
+                         (e[1][0]-odom_origin[0], e[1][1]-odom_origin[1], e[1][2]-odom_origin[2]))
+                        for e in edges]
+            edge_data[i] = (ts, shifted)
+        # Attentionノード
+        for i in range(len(attn_node_data)):
+            ts, xyz, rgb = attn_node_data[i]
+            attn_node_data[i] = (ts, xyz - odom_origin[:3], rgb)
+        # Attentionエッジ
+        for i in range(len(attn_edge_data)):
+            ts, edges = attn_edge_data[i]
+            shifted = [((e[0][0]-odom_origin[0], e[0][1]-odom_origin[1], e[0][2]-odom_origin[2]),
+                         (e[1][0]-odom_origin[0], e[1][1]-odom_origin[1], e[1][2]-odom_origin[2]))
+                        for e in edges]
+            attn_edge_data[i] = (ts, shifted)
 
     print("Detecting attention phases...")
     attention_phases = read_attention_target(args.bag_path)
@@ -235,6 +268,11 @@ def main():
     if args.with_gridmap:
         print("\nBuilding background occupancy grid map...")
         all_points = accumulate_pointclouds(args.bag_path, args.cloud_topic)
+        # 点群にも原点オフセットを適用
+        if np.any(odom_origin != 0):
+            all_points[:, 0] -= odom_origin[0]
+            all_points[:, 1] -= odom_origin[1]
+            all_points[:, 2] -= odom_origin[2]
         height_map, count_map, bg_extent = create_gridmap(all_points, args.resolution)
         bg_occupancy = create_occupancy_grid(
             height_map, count_map, ground_threshold=args.ground_threshold)
