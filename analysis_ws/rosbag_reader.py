@@ -250,6 +250,53 @@ def read_odometry(bag_path, topic='/Odometry'):
             np.array(orientations) if orientations else np.empty((0, 4)))
 
 
+def read_path(bag_path, topic='/path'):
+    """nav_msgs/Pathトピックから全経路メッセージを読み取る
+
+    Returns: list of (timestamp_ns, waypoints (N,3) xyz配列)
+    """
+    results = []
+    with open_bag(bag_path) as reader:
+        connections = [c for c in reader.connections if c.topic == topic]
+        if not connections:
+            print(f"Warning: topic '{topic}' not found in bag")
+            return results
+
+        for conn, timestamp, rawdata in reader.messages(connections=connections):
+            msg = deserialize_cdr(rawdata, conn.msgtype)
+            waypoints = []
+            for pose_stamped in msg.poses:
+                p = pose_stamped.pose.position
+                waypoints.append([p.x, p.y, p.z])
+            if waypoints:
+                results.append((timestamp, np.array(waypoints)))
+
+    return results
+
+
+def read_pose_stamped(bag_path, topic):
+    """geometry_msgs/PoseStampedトピックから全ポーズを読み取る
+
+    Returns: list of (timestamp_ns, position (3,), orientation (4,) xyzw)
+    """
+    results = []
+    with open_bag(bag_path) as reader:
+        connections = [c for c in reader.connections if c.topic == topic]
+        if not connections:
+            print(f"Warning: topic '{topic}' not found in bag")
+            return results
+
+        for conn, timestamp, rawdata in reader.messages(connections=connections):
+            msg = deserialize_cdr(rawdata, conn.msgtype)
+            p = msg.pose.position
+            o = msg.pose.orientation
+            results.append((timestamp,
+                            np.array([p.x, p.y, p.z]),
+                            np.array([o.x, o.y, o.z, o.w])))
+
+    return results
+
+
 def read_attention_target(bag_path, topic='/attention_target_position'):
     """attention_target_positionトピックからattentionフェーズを検出
 
