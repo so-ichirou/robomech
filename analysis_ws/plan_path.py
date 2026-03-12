@@ -34,9 +34,16 @@ from plot_gridmap import create_gridmap, denoise_gridmap
 # Occupancy map の二値化
 # ============================================================
 
-def height_map_to_occupancy(height_map, traversable_height_range=(-0.5, 0.3),
-                            slope_threshold=0.15):
-    """高さマップから二値occupancy mapを生成
+def height_map_to_occupancy(height_map, ground_z, obstacle_threshold=0.1):
+    """高さマップから二値occupancy mapを生成（基準面からの差分ベース）
+
+    各グリッドセルの平均高さ(height_map)と基準面(ground_z)の差が
+    obstacle_threshold以上なら障害物と判定する。
+
+    Args:
+        height_map: 2D配列（各セルの平均高さ, NaN=データなし）
+        ground_z: 基準面の高さ [m]（点群のz最小値）
+        obstacle_threshold: 障害物判定閾値 [m]（基準面からの差分）
 
     Returns:
         occupancy: 2D配列 (0=free, 1=obstacle, -1=unknown)
@@ -45,18 +52,11 @@ def height_map_to_occupancy(height_map, traversable_height_range=(-0.5, 0.3),
     occupancy = np.full((ny, nx), -1, dtype=np.int8)
 
     valid = ~np.isnan(height_map)
-    h_min, h_max = traversable_height_range
+    diff = height_map - ground_z
 
-    in_range = valid & (height_map >= h_min) & (height_map <= h_max)
-    occupancy[in_range] = 0
-    occupancy[valid & ~in_range] = 1
-
-    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        shifted = np.roll(np.roll(height_map, -dy, axis=0), -dx, axis=1)
-        shifted_valid = np.roll(np.roll(valid, -dy, axis=0), -dx, axis=1)
-        both_valid = valid & shifted_valid
-        steep = both_valid & (np.abs(height_map - shifted) > slope_threshold)
-        occupancy[steep & (occupancy == 0)] = 1
+    # 基準面からの差分が閾値未満 → free、閾値以上 → obstacle
+    occupancy[valid & (diff < obstacle_threshold)] = 0
+    occupancy[valid & (diff >= obstacle_threshold)] = 1
 
     return occupancy
 
@@ -239,14 +239,10 @@ def main():
                         help='オドメトリトピック名')
     parser.add_argument('--resolution', type=float, default=0.05,
                         help='グリッド解像度 [m]')
-    parser.add_argument('--height-min', type=float, default=-0.5,
-                        help='走行可能な最小高さ [m]')
-    parser.add_argument('--height-max', type=float, default=0.3,
-                        help='走行可能な最大高さ [m]')
-    parser.add_argument('--ceiling-height', type=float, default=0.2,
-                        help='天井フィルタ閾値: この高さ以上の点を除去 [m]')
-    parser.add_argument('--slope-threshold', type=float, default=0.15,
-                        help='障害物判定の勾配閾値 [m]')
+    parser.add_argument('--robot-height', type=float, default=0.5,
+                        help='ロボットの高さ [m]（天井フィルタ用）')
+    parser.add_argument('--obstacle-threshold', type=float, default=0.1,
+                        help='障害物判定閾値: 基準面からの差分 [m]')
     parser.add_argument('--min-points', type=int, default=3,
                         help='ノイズ除去の最小点数閾値')
     parser.add_argument('--output-dir', default='./output/path_planning',
@@ -288,11 +284,17 @@ def main():
     all_points = np.vstack([pts for _, pts in frames])
     print(f"  Total points: {all_points.shape[0]:,}")
 
-    # 天井フィルタ: z >= ceiling_height の点を除去
-    ceiling_mask = all_points[:, 2] < args.ceiling_height
+    # 基準面（地面）: 点群のz最小値
+    ground_z = np.min(all_points[:, 2])
+    print(f"  Ground reference z: {ground_z:.3f} m")
+
+    # 天井フィルタ: 基準面 + ロボット高さ + 0.1m 以上を除去
+    ceiling_z = ground_z + args.robot_height + 0.1
+    ceiling_mask = all_points[:, 2] < ceiling_z
     n_before = len(all_points)
     all_points = all_points[ceiling_mask]
-    print(f"  Ceiling filter (z < {args.ceiling_height}m): "
+    print(f"  Ceiling filter (z < {ceiling_z:.3f}m = ground + "
+          f"robot_height({args.robot_height}m) + 0.1m): "
           f"{n_before:,} -> {len(all_points):,} "
           f"(removed {n_before - len(all_points):,})")
 
@@ -305,11 +307,11 @@ def main():
     height_map = denoise_gridmap(height_map, count_map,
                                  min_points=args.min_points)
 
-    # 二値化
+    # 二値化（基準面からの差分ベース）
     occupancy = height_map_to_occupancy(
         height_map,
-        traversable_height_range=(args.height_min, args.height_max),
-        slope_threshold=args.slope_threshold
+        ground_z=ground_z,
+        obstacle_threshold=args.obstacle_threshold,
     )
 
     n_free = np.sum(occupancy == 0)
