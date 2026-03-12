@@ -426,19 +426,12 @@ def main():
 
     t0 = odom_ts[0]
 
-    # --- Goal (/nav_goal, /goal_pose) ---
-    print("Reading goal position...")
-    goal_data = read_pose_stamped(args.bag_path, '/nav_goal')
-    if not goal_data:
-        goal_data = read_pose_stamped(args.bag_path, '/goal_pose')
-    if goal_data:
-        goal_slam = goal_data[0][1][:2]
-        goal_rv = slam_to_robot_view(goal_slam)
-        print(f"  Goal (SLAM):  ({goal_slam[0]:.2f}, {goal_slam[1]:.2f})")
-        print(f"  Goal (view):  ({goal_rv[0]:.2f}, {goal_rv[1]:.2f})")
-    else:
-        goal_rv = None
-        print("  No goal topic found")
+    # --- Goal = rosbagの最後のロボット位置 ---
+    goal_slam = odom_pos[-1, :2]
+    goal_rv = slam_to_robot_view(goal_slam)
+    print(f"  Goal = last robot position")
+    print(f"  Goal (SLAM):  ({goal_slam[0]:.2f}, {goal_slam[1]:.2f})")
+    print(f"  Goal (view):  ({goal_rv[0]:.2f}, {goal_rv[1]:.2f})")
 
     # --- /planned_path_marker ---
     print("Reading /planned_path_marker...")
