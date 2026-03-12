@@ -243,6 +243,8 @@ def main():
                         help='走行可能な最小高さ [m]')
     parser.add_argument('--height-max', type=float, default=0.3,
                         help='走行可能な最大高さ [m]')
+    parser.add_argument('--ceiling-height', type=float, default=0.2,
+                        help='天井フィルタ閾値: この高さ以上の点を除去 [m]')
     parser.add_argument('--slope-threshold', type=float, default=0.15,
                         help='障害物判定の勾配閾値 [m]')
     parser.add_argument('--min-points', type=int, default=3,
@@ -285,6 +287,14 @@ def main():
 
     all_points = np.vstack([pts for _, pts in frames])
     print(f"  Total points: {all_points.shape[0]:,}")
+
+    # 天井フィルタ: z >= ceiling_height の点を除去
+    ceiling_mask = all_points[:, 2] < args.ceiling_height
+    n_before = len(all_points)
+    all_points = all_points[ceiling_mask]
+    print(f"  Ceiling filter (z < {args.ceiling_height}m): "
+          f"{n_before:,} -> {len(all_points):,} "
+          f"(removed {n_before - len(all_points):,})")
 
     print(f"Creating grid map (resolution={args.resolution}m)...")
     height_map, count_map, extent = create_gridmap(all_points, args.resolution)
