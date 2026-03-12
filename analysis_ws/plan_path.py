@@ -68,14 +68,15 @@ def height_map_to_occupancy(height_map, traversable_height_range=(-0.5, 0.3),
 def slam_to_robot_view(slam_xy):
     """SLAM座標(x,y)をロボット視点(左右,前方)に変換
 
-    ロボット視点: display_x = slam_y (左右), display_y = slam_x (前方)
+    SLAM: +X=前方, +Y=左
+    ロボット視点: display_x = -slam_y (右が正), display_y = slam_x (前方)
     """
     if slam_xy is None:
         return None
     slam_xy = np.asarray(slam_xy)
     if slam_xy.ndim == 1:
-        return np.array([slam_xy[1], slam_xy[0]])
-    return np.column_stack([slam_xy[:, 1], slam_xy[:, 0]])
+        return np.array([-slam_xy[1], slam_xy[0]])
+    return np.column_stack([-slam_xy[:, 1], slam_xy[:, 0]])
 
 
 def slam_yaw_to_robot_view(yaw):
@@ -314,10 +315,12 @@ def main():
     #   転置 → rows=SLAM_X(=前方), cols=SLAM_Y(=左右)
     #   imshow(origin='lower') で vertical=前方, horizontal=左右
     xmin, xmax, ymin, ymax = extent
-    occupancy_rv = occupancy.T       # (nx, ny) : rows=SLAM_X, cols=SLAM_Y
-    extent_rv = (ymin, ymax, xmin, xmax)  # (left_min, left_max, fwd_min, fwd_max)
+    # 転置: rows=SLAM_X(前方), cols=SLAM_Y
+    # 左右反転: display_x = -slam_y なので列を反転
+    occupancy_rv = occupancy.T[:, ::-1]  # (nx, ny) 列反転で左右補正
+    extent_rv = (-ymax, -ymin, xmin, xmax)  # (right_min, right_max, fwd_min, fwd_max)
     print(f"  Robot view grid: {occupancy_rv.shape[1]} x {occupancy_rv.shape[0]}")
-    print(f"  Robot view extent: left=[{ymin:.1f}, {ymax:.1f}], "
+    print(f"  Robot view extent: LR=[{-ymax:.1f}, {-ymin:.1f}], "
           f"fwd=[{xmin:.1f}, {xmax:.1f}]")
 
     # ===========================================================
