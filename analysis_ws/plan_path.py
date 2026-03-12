@@ -25,7 +25,7 @@ from pathlib import Path
 
 from rosbag_reader import (
     read_all_pointclouds, read_odometry, read_all_markers,
-    read_path, read_pose_stamped,
+    read_path, read_pose_stamped, read_attention_target,
 )
 from plot_gridmap import create_gridmap, denoise_gridmap
 
@@ -108,7 +108,80 @@ def marker_edges_to_xy(edge_pairs):
 
 
 # ============================================================
-# 可視化
+# Attention前後の経路比較画像
+# ============================================================
+
+def render_attention_path_comparison(
+        occupancy_rv, extent_rv, view_xlim, view_ylim,
+        before_path_rv, after_path_rv,
+        robot_rv, goal_rv,
+        attention_idx, title_suffix='',
+        output_path=None):
+    """Attention前後の計画経路を1枚に重ねて描画
+
+    Args:
+        before_path_rv: attention前の経路 (N,2) ロボット視点, or None
+        after_path_rv: attention後の経路 (N,2) ロボット視点, or None
+        robot_rv: ロボット位置 (2,) or None
+        goal_rv: ゴール位置 (2,) or None
+        attention_idx: attention番号（0始まり）
+    """
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # 背景: occupancy map
+    display = np.full(occupancy_rv.shape, 0.5, dtype=np.float64)
+    display[occupancy_rv == 0] = 1.0
+    display[occupancy_rv == 1] = 0.0
+    ax.imshow(display, origin='lower', extent=extent_rv,
+              cmap='gray', vmin=0, vmax=1,
+              aspect='equal', interpolation='nearest')
+
+    # Before path (青)
+    if before_path_rv is not None and len(before_path_rv) > 1:
+        ax.plot(before_path_rv[:, 0], before_path_rv[:, 1],
+                color='dodgerblue', linewidth=3.0, alpha=0.9,
+                label='Before attention', zorder=5)
+
+    # After path (赤)
+    if after_path_rv is not None and len(after_path_rv) > 1:
+        ax.plot(after_path_rv[:, 0], after_path_rv[:, 1],
+                color='red', linewidth=3.0, linestyle='--', alpha=0.9,
+                label='After attention', zorder=6)
+
+    # ゴール
+    if goal_rv is not None:
+        ax.plot(goal_rv[0], goal_rv[1],
+                marker='*', color='gold', markersize=18,
+                markeredgecolor='black', markeredgewidth=0.8,
+                zorder=10, label='Goal')
+
+    # ロボット位置
+    if robot_rv is not None:
+        ax.plot(robot_rv[0], robot_rv[1],
+                marker='^', color='limegreen', markersize=14,
+                markeredgecolor='black', markeredgewidth=0.8,
+                zorder=11, label='Robot')
+
+    ax.set_xlim(view_xlim)
+    ax.set_ylim(view_ylim)
+    ax.set_xlabel('Left/Right [m]', fontsize=12)
+    ax.set_ylabel('Forward [m]', fontsize=12)
+    ax.set_title(f'Path Change by Attention #{attention_idx}{title_suffix}',
+                 fontsize=14)
+    ax.legend(fontsize=10, loc='upper right', framealpha=0.8)
+    ax.tick_params(labelsize=10)
+    ax.grid(True, alpha=0.2, linewidth=0.5)
+
+    plt.tight_layout()
+    if output_path:
+        fig.savefig(output_path, dpi=300, bbox_inches='tight',
+                    facecolor='white', edgecolor='none')
+        print(f"  Saved: {output_path}")
+    plt.close(fig)
+
+
+# ============================================================
+# 可視化（経路オーバーレイ付きフレーム描画）
 # ============================================================
 
 def render_frame(occupancy_rv, extent_rv, view_xlim, view_ylim,
@@ -351,6 +424,8 @@ def main():
         print("Error: No odometry data found")
         return
 
+    t0 = odom_ts[0]
+
     # --- Goal (/nav_goal, /goal_pose) ---
     print("Reading goal position...")
     goal_data = read_pose_stamped(args.bag_path, '/nav_goal')
@@ -380,15 +455,104 @@ def main():
     nav_paths = read_path(args.bag_path, '/path')
     print(f"  {len(nav_paths)} messages")
 
+    # --- /planned_path (nav_msgs/Path) ---
+    print("Reading /planned_path...")
+    planned_paths = read_path(args.bag_path, '/planned_path')
+    print(f"  {len(planned_paths)} messages")
+
+    # --- Attention phases ---
+    print("Reading attention phases...")
+    attention_phases = read_attention_target(args.bag_path)
+    print(f"  {len(attention_phases)} attention phase(s)")
+    for idx, (t_start, t_end) in enumerate(attention_phases):
+        dur = (t_end - t_start) / 1e9
+        print(f"    Phase {idx}: {(t_start - t0) / 1e9:.1f}s ~ "
+              f"{(t_end - t0) / 1e9:.1f}s (duration {dur:.1f}s)")
+
     # ===========================================================
-    # 3. 10フレームごとに画像を出力
+    # 3. Attention前後の経路比較画像
     # ===========================================================
     print("\n" + "=" * 60)
-    print("Step 3: Rendering frames (robot view)")
+    print("Step 3: Rendering attention path comparison images")
+    print("=" * 60)
+
+    # planned_path_marker または planned_path を経路ソースとして使用
+    # （両方あればmarkerを優先）
+    path_source = []
+    path_source_name = None
+    if planned_markers:
+        path_source_name = '/planned_path_marker'
+        for ts, edges in planned_markers:
+            xy = marker_edges_to_xy(edges)
+            if len(xy) > 0:
+                path_source.append((ts, xy))
+    elif planned_paths:
+        path_source_name = '/planned_path'
+        for ts, waypoints in planned_paths:
+            if len(waypoints) > 0:
+                path_source.append((ts, waypoints[:, :2]))
+
+    if path_source and attention_phases:
+        print(f"  Using {path_source_name} as path source "
+              f"({len(path_source)} messages)")
+
+        for att_idx, (att_start, att_end) in enumerate(attention_phases):
+            # Attention直前の経路
+            before_path_slam = None
+            for ts, xy in path_source:
+                if ts <= att_start:
+                    before_path_slam = xy
+                else:
+                    break
+
+            # Attention直後の経路
+            after_path_slam = None
+            for ts, xy in path_source:
+                if ts >= att_end:
+                    after_path_slam = xy
+                    break
+
+            before_rv = slam_to_robot_view(before_path_slam) \
+                if before_path_slam is not None else None
+            after_rv = slam_to_robot_view(after_path_slam) \
+                if after_path_slam is not None else None
+
+            # Attention開始時のロボット位置を取得
+            robot_at_att = None
+            for j in range(len(odom_ts)):
+                if odom_ts[j] >= att_start:
+                    robot_at_att = slam_to_robot_view(odom_pos[j, :2])
+                    break
+
+            has_before = before_rv is not None and len(before_rv) > 1
+            has_after = after_rv is not None and len(after_rv) > 1
+
+            if has_before or has_after:
+                render_attention_path_comparison(
+                    occupancy_rv, extent_rv, view_xlim, view_ylim,
+                    before_path_rv=before_rv,
+                    after_path_rv=after_rv,
+                    robot_rv=robot_at_att,
+                    goal_rv=goal_rv,
+                    attention_idx=att_idx,
+                    output_path=output_dir / f'attention_{att_idx}_path_comparison.png',
+                )
+            else:
+                print(f"  Attention {att_idx}: insufficient path data to compare")
+    else:
+        if not attention_phases:
+            print("  No attention phases detected")
+        if not path_source:
+            print("  No planned path data available")
+
+    # ===========================================================
+    # 4. 10フレームごとに画像を出力
+    # ===========================================================
+    print("\n" + "=" * 60)
+    print("Step 4: Rendering frames (robot view)")
     print("=" * 60)
 
     n_odom = len(odom_ts)
-    t0 = odom_ts[0]
     image_count = 0
 
     def quat_to_yaw(q):
@@ -455,10 +619,10 @@ def main():
                   f"(frame {i}/{n_odom}, t={time_sec:.1f}s)")
 
     # ===========================================================
-    # 4. 最終フレーム（全データ）
+    # 5. 最終フレーム（全データ）
     # ===========================================================
     print("\n" + "=" * 60)
-    print("Step 4: Rendering final summary image")
+    print("Step 5: Rendering final summary image")
     print("=" * 60)
 
     last_pp_rv = None
