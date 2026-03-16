@@ -116,6 +116,38 @@ def denoise_gridmap(height_map, count_map, min_points=3, median_size=3):
     return denoised
 
 
+def create_occupancy_grid(height_map, count_map, ground_threshold=0.15,
+                          min_points=3, median_size=3):
+    """高さマップから3値占有グリッドを作成
+
+    白(1.0)=地面/free, 黒(0.0)=障害物, 灰(0.5)=不明
+
+    Args:
+        height_map: 高さマップ
+        count_map: 点数マップ
+        ground_threshold: 地面からこの高さ以上を障害物とする [m]
+        min_points: ノイズ除去の最小点数
+        median_size: メディアンフィルタサイズ
+
+    Returns:
+        occupancy: 2D配列 (0.0=障害物, 0.5=不明, 1.0=free)
+    """
+    denoised = denoise_gridmap(height_map, count_map, min_points, median_size)
+    valid = ~np.isnan(denoised)
+
+    # 不明(灰色)で初期化
+    occupancy = np.full_like(denoised, 0.5)
+
+    if np.any(valid):
+        ground_height = np.median(denoised[valid])
+        is_ground = valid & ((denoised - ground_height) < ground_threshold)
+        is_obstacle = valid & ((denoised - ground_height) >= ground_threshold)
+        occupancy[is_ground] = 1.0     # 白 = free/地面
+        occupancy[is_obstacle] = 0.0   # 黒 = 障害物
+
+    return occupancy
+
+
 def plot_gridmap_figure(height_map, extent, path_xy=None, title='Grid Map',
                         output_path=None, cmap='terrain', vmin=None, vmax=None):
     """グリッドマップを論文品質で描画"""
